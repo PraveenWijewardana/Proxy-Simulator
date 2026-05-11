@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxy Health Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen">
+<div class="max-w-7xl mx-auto py-8 px-4">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h1 class="text-3xl font-bold">Proxy Health Simulator</h1>
+            <p class="text-sm text-slate-500">State simulator + configuration API</p>
+        </div>
+        <div class="text-sm bg-white shadow px-4 py-2 rounded-lg">
+            <div>Base URL: <span id="baseUrl" class="font-mono"></span></div>
+            <div>Global Delay: <span id="globalDelay" th:text="${config.globalDelayMs}">0</span> ms</div>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow p-4 mb-6">
+        <h2 class="text-lg font-semibold mb-3">Simulation Config</h2>
+        <div class="flex gap-3 items-center">
+            <input id="delayInput" type="number" min="0" placeholder="Global Delay (ms)"
+                   class="border rounded px-3 py-2 w-64"/>
+            <button onclick="saveConfig()" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">
+                Save
+            </button>
+            <span id="configMessage" class="text-sm text-slate-500"></span>
+        </div>
+    </div>
+
+    <div>
+        <h2 class="text-lg font-semibold mb-3">Proxies</h2>
+        <div id="proxyGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div th:each="proxy : ${proxies}" th:attr="data-proxy-id=${proxy.id}" class="bg-white rounded-xl shadow p-4 border">
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="font-semibold" th:text="${proxy.id}">px-001</h3>
+                    <span class="text-xs font-semibold px-2 py-1 rounded-full"
+                          th:classappend="${proxy.state.name() == 'UP'} ? ' bg-emerald-100 text-emerald-700' : (${proxy.state.name() == 'DOWN'} ? ' bg-red-100 text-red-700' : ' bg-amber-100 text-amber-700')"
+                          th:text="${proxy.state}">UP</span>
+                </div>
+                <p class="text-sm text-slate-500 mb-3">Updated: <span th:text="${proxy.updatedAt}">-</span></p>
+                <div class="flex gap-2">
+                    <button th:attr="onclick='setProxyState(\'' + ${proxy.id} + '\',\'UP\')'"
+                            class="text-xs bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-700">Set UP
+                    </button>
+                    <button th:attr="onclick='setProxyState(\'' + ${proxy.id} + '\',\'DOWN\')'"
+                            class="text-xs bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700">Set DOWN
+                    </button>
+                    <button th:attr="onclick='setProxyState(\'' + ${proxy.id} + '\',\'TIMEOUT\')'"
+                            class="text-xs bg-amber-500 text-white px-3 py-1 rounded hover:bg-amber-600">Set TIMEOUT
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-8 bg-white rounded-xl shadow p-4">
+        <h2 class="text-lg font-semibold mb-3">CLI Snippets</h2>
+        <p class="text-sm text-slate-500 mb-3">Commands are generated from your current host and port.</p>
+        <div class="space-y-2 text-sm">
+            <pre class="bg-slate-900 text-slate-100 p-3 rounded overflow-x-auto"><code id="cmdConfig"></code></pre>
+            <pre class="bg-slate-900 text-slate-100 p-3 rounded overflow-x-auto"><code id="cmdBulk"></code></pre>
+            <pre class="bg-slate-900 text-slate-100 p-3 rounded overflow-x-auto"><code id="cmdPatch"></code></pre>
+            <pre class="bg-slate-900 text-slate-100 p-3 rounded overflow-x-auto"><code id="cmdAlerts"></code></pre>
+            <div class="mt-4">
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="font-semibold">Proxy URL Array (copyable)</h3>
+                    <button id="copyProxyArrayBtn" onclick="copyProxyArray()" class="text-xs bg-sky-600 text-white px-3 py-1 rounded hover:bg-sky-700">Copy</button>
+                </div>
+                <pre id="proxyArrayPre" class="bg-slate-800 text-slate-100 p-3 rounded overflow-x-auto"><code id="proxyArray">[]</code></pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const baseUrl = window.location.origin;
+    document.getElementById('baseUrl').textContent = baseUrl;
+
+    function updateCliSnippets() {
+        document.getElementById('cmdConfig').textContent = `curl -X POST "${baseUrl}/api/config" -H "Content-Type: application/json" -d '{"globalDelayMs": 200}'`;
+        document.getElementById('cmdBulk').textContent = `curl -X POST "${baseUrl}/api/proxies" -H "Content-Type: application/json" -d '[{"id":"px-001","state":"DOWN"},{"id":"px-999","state":"UP"}]'`;
+        document.getElementById('cmdPatch').textContent = `curl -X PATCH "${baseUrl}/api/proxies/px-001" -H "Content-Type: application/json" -d '{"state":"TIMEOUT"}'`;
+        document.getElementById('cmdAlerts').textContent = `curl "${baseUrl}/api/alerts"`;
+    }
+
+    async function refreshProxies() {
+        const response = await fetch('/api/proxies');
+        const proxies = await response.json();
+        const proxyGrid = document.getElementById('proxyGrid');
+
+        proxyGrid.innerHTML = proxies.map(proxy => {
+            let badgeClass = 'bg-emerald-100 text-emerald-700';
+            if (proxy.state === 'DOWN') badgeClass = 'bg-red-100 text-red-700';
+            if (proxy.state === 'TIMEOUT') badgeClass = 'bg-amber-100 text-amber-700';
+
+            return `
+                <div data-proxy-id="${proxy.id}" class="bg-white rounded-xl shadow p-4 border">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="font-semibold">${proxy.id}</h3>
+                        <span class="text-xs font-semibold px-2 py-1 rounded-full ${badgeClass}">${proxy.state}</span>
+                    </div>
+                    <p class="text-sm text-slate-500 mb-3">Updated: ${proxy.updatedAt ?? '-'}</p>
+                    <div class="flex gap-2">
+                        <button onclick="setProxyState('${proxy.id}','UP')" class="text-xs bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-700">Set UP</button>
+                        <button onclick="setProxyState('${proxy.id}','DOWN')" class="text-xs bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700">Set DOWN</button>
+                        <button onclick="setProxyState('${proxy.id}','TIMEOUT')" class="text-xs bg-amber-500 text-white px-3 py-1 rounded hover:bg-amber-600">Set TIMEOUT</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        // update copyable proxy array
+        try {
+            const urls = proxies.map(p => `${baseUrl}/proxy/${p.id}`);
+            document.getElementById('proxyArray').textContent = JSON.stringify(urls, null, 2);
+        } catch (e) {
+            document.getElementById('proxyArray').textContent = '[]';
+        }
+    }
+
+    async function setProxyState(id, state) {
+        await fetch(`/api/proxies/${id}`, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({state})
+        });
+        await refreshProxies();
+    }
+
+    async function saveConfig() {
+        const globalDelayMs = Number(document.getElementById('delayInput').value || 0);
+        const response = await fetch('/api/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({globalDelayMs})
+        });
+
+        const payload = await response.json();
+        document.getElementById('globalDelay').textContent = payload.globalDelayMs;
+        document.getElementById('configMessage').textContent = 'Saved';
+        setTimeout(() => document.getElementById('configMessage').textContent = '', 1500);
+    }
+
+    updateCliSnippets();
+    // expose proxy array on initial load
+    refreshProxies();
+
+    function copyProxyArray() {
+        const text = document.getElementById('proxyArray').textContent;
+        if (!text) return;
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = document.getElementById('copyProxyArrayBtn');
+            const old = btn.textContent;
+            btn.textContent = 'Copied';
+            setTimeout(() => btn.textContent = old, 1500);
+        }).catch(() => alert('Copy failed'));
+    }
+</script>
+</body>
+</html>
+
